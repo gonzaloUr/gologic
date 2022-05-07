@@ -64,3 +64,29 @@ So for $\Box = \lor \text{ or } \land$ and completely new variables $z_0 \neq z_
 $$
 	(Q_0 x)F \mathrel\Box (Q_1 y)G \equiv (Q_0 z_0)(Q_1 z_1)(F[z_0/x] \mathrel\Box G[z_1/y])
 $$
+
+For $z_0 \neq z_1$ new variables where $\overline{\forall} = \exists$ and $\overline{\exists} = \forall$
+$$
+\begin{align*}
+	(Q_0 x) F \implies (Q_1 y) G 
+	&\equiv \lnot (Q_0 x) F \lor (Q_1 y) G\\ 
+	&\equiv (\overline{Q_0} x)(\lnot F) \lor (Q_1 y) G\\
+	&\equiv (\overline{Q_0} z_0)(Q_1 z_1)(\lnot F[z_0/x] \lor G[z_1/y])\\
+	&\equiv (\overline{Q_0} z_0)(Q_1 z_1)(F[z_0/x] \implies G[z_1/y])
+\end{align*}
+$$
+
+For $z_0 \neq z_1$ new variables 
+$$
+\begin{align*}
+	&(Q_0 x) F \iff (Q_1 y) G \equiv\\ 
+	&(Q_0 x) F \implies (Q_1 y) G \land (Q_1 y) G \implies (Q_0 x ) F \equiv\\
+	&(\overline{Q_0} z_0)(Q_1 z_1)(F \implies G) \land (\overline{Q_1} z_1)(Q_0 z_0)(G \implies F) \equiv\\
+	&(\overline{Q_0} z_0)(Q_1 z_1)(F \implies G) \land (Q_0 z_0)(\overline{Q_1} z_1)(G \implies F) \equiv\\
+	&(\overline{Q_0} z_0)[(Q_1 z_1)(F \implies G) \land (Q_0 z_0)(\overline{Q_1} z_1)(G \implies F)] \equiv\\
+	&(\overline{Q_0} z_0)(Q_0 z_0)[(Q_1 z_1)(F \implies G) \land (\overline{Q_1} z_1)(G \implies F)] \equiv\\
+	&(\overline{Q_0} z_0)(Q_0 z_0)(Q_1 z_1)[(F \implies G) \land (\overline{Q_1} z_1)(G \implies F)] \equiv\\
+	&(\overline{Q_0} z_0)(Q_0 z_0)(Q_1 z_1)(\overline{Q_1} z_1)[(F \implies G) \land (G \implies F)] \equiv\\
+	&(\overline{Q_0} z_0)(Q_0 z_0)(Q_1 z_1)(\overline{Q_1} z_1)[F \iff G]
+\end{align*}
+$$

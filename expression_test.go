@@ -5,110 +5,16 @@ import (
 	"reflect"
 	"testing"
 	"testing/quick"
-	"time"
 )
 
 const (
 	MaxArgsFunc = 3
 	MaxArgsProp = 3
-	MaxId       = 5
+	MaxIdFunc   = 5
+	MaxIdProp   = 5
+	MaxIdConst  = 5
+	MaxIdVar    = 20
 )
-
-func GenerateTerm(rand *rand.Rand, size int) *Expr {
-	var choice int
-	if size <= 1 {
-		choice = rand.Intn(2)
-	} else {
-		choice = rand.Intn(3)
-	}
-	switch choice {
-	case 0:
-		return Const(uint(rand.Intn(MaxId)))
-	case 1:
-		return Var(uint(rand.Intn(MaxId)))
-	default:
-		return Func(uint(rand.Intn(MaxId)), GenerateTerms(rand, size)...)
-	}
-}
-
-func ArgsSize(rand *rand.Rand, size int) []int {
-	cantArgs := rand.Intn(min(MaxArgsFunc, size)) + 1
-	argsSize := make([]int, cantArgs)
-	for i := range argsSize {
-		argsSize[i] = 1
-	}
-	for i := 0; i < size-(cantArgs+1); i++ {
-		toInc := rand.Intn(cantArgs)
-		argsSize[toInc]++
-	}
-	return argsSize
-}
-
-func GenerateTerms(rand *rand.Rand, size int) []*Expr {
-	if size == 0 {
-		return []*Expr{}
-	}
-	argsSize := ArgsSize(rand, size)
-	args := make([]*Expr, len(argsSize))
-	for i, v := range argsSize {
-		args[i] = GenerateTerm(rand, v)
-	}
-	return args
-}
-
-func GenerateForm(rand *rand.Rand, size int) *Expr {
-	if size <= 1 {
-		return Prop(uint(rand.Intn(MaxId)), GenerateTerms(rand, size)...)
-	}
-	switch rand.Intn(8) {
-	case 0:
-		return Prop(uint(rand.Intn(MaxId)), GenerateTerms(rand, size-1)...)
-	case 1:
-		return Not(GenerateForm(rand, size-1))
-	case 2:
-		return Forall(uint(rand.Intn(MaxId)), GenerateForm(rand, size-1))
-	case 3:
-		return Exists(uint(rand.Intn(MaxId)), GenerateForm(rand, size-1))
-	case 4:
-		return And(GenerateForms(rand, size))
-	case 5:
-		return Or(GenerateForms(rand, size))
-	case 6:
-		return Iff(GenerateForms(rand, size))
-	default:
-		return Then(GenerateForms(rand, size))
-	}
-}
-
-func GenerateForms(rand *rand.Rand, size int) (*Expr, *Expr) {
-	fstArgSize := rand.Intn(size) + 1
-	sndArgSize := size - fstArgSize
-	return GenerateForm(rand, fstArgSize), GenerateForm(rand, sndArgSize)
-}
-
-func (*Expr) Generate(rand *rand.Rand, size int) reflect.Value {
-	return reflect.ValueOf(GenerateForm(rand, size))
-}
-
-type Form Expr
-
-func (*Form) Generate(rand *rand.Rand, size int) reflect.Value {
-	return reflect.ValueOf((*Form)(GenerateForm(rand, size)))
-}
-
-func (f *Form) String() string {
-	return (*Expr)(f).String()
-}
-
-type Term Expr
-
-func (*Term) Generate(rand *rand.Rand, size int) reflect.Value {
-	return reflect.ValueOf((*Term)(GenerateTerm(rand, size)))
-}
-
-func (t *Term) Stirng() string {
-	return (*Expr)(t).String()
-}
 
 func pow(b, n int) int {
 	ret := 1
@@ -118,14 +24,103 @@ func pow(b, n int) int {
 	return ret
 }
 
-// Returns all the repeating permutations with the passed length of the selected elements
-// from set using elems with len(elems) = length such that elems[i] selects set[elems[i]]
-// from the set.
-//
-// eg:
-// RepeatingPermutation(3, []uint{0, 1, 2}, map[uint]{0: 4, 1: 5, 2: 6}) =
-// [[4, 4, 4], [4, 4, 5], [4, 4, 6], [4, 5, 4], ... ]
-func RepeatingPermutation[T comparable](length int, elems []uint, set map[uint]T) [][]T {
+type BitArray []bool
+
+func (b BitArray) Equal(other BitArray) bool {
+	if len(b) != len(other) {
+		return false
+	}
+	for i := range b {
+		if b[i] != other[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Model over boolean values with at least two constants for true and false.
+type Model struct {
+	// True constant id.
+	TrueConst uint
+
+	// False constant id.
+	FalseConst uint
+
+	// Set of true constants.
+	Constants map[uint]struct{}
+
+	// Map from function id and args length to a set of true assigments.
+	Functions map[uint]map[int][]BitArray
+
+	// Map from prop id and args length to a set of true assigments.
+	Propositions map[uint]map[int][]BitArray
+}
+
+func (m *Model) EvalTerm(e *Expr) []bool {
+	if e == nil {
+		return []bool{}
+	}
+	switch e.class {
+	case constant:
+		if _, ok := m.Constants[e.value]; ok {
+			return []bool{true}
+		}
+		return []bool{false}
+	case comma:
+		return append(m.EvalTerm(e.left), m.EvalTerm(e.right)...)
+	case function:
+		args := append(m.EvalTerm(e.left), m.EvalTerm(e.right)...)
+		for _, array := range m.Functions[e.value][len(args)] {
+			if array.Equal(args) {
+				return []bool{true}
+			}
+		}
+		return []bool{false}
+	default:
+		panic("invalid expression class")
+	}
+}
+
+func (m *Model) EvalForm(e *Expr) bool {
+	switch e.class {
+	case prop:
+		args := append(m.EvalTerm(e.left), m.EvalTerm(e.right)...)
+		for _, array := range m.Functions[e.value][len(args)] {
+			if array.Equal(args) {
+				return true
+			}
+		}
+		return false
+	case and:
+		return m.EvalForm(e.left) && m.EvalForm(e.right)
+	case or:
+		return m.EvalForm(e.left) || m.EvalForm(e.right)
+	case iff:
+		return m.EvalForm(e.left) == m.EvalForm(e.right)
+	case then:
+		return !m.EvalForm(e.left) || m.EvalForm(e.right)
+	case not:
+		return !m.EvalForm(e.left)
+	case forall:
+		for _, id := range []uint{m.TrueConst, m.FalseConst} {
+			if !m.EvalForm(e.left.Substitute(Const(uint(id)), e.value)) {
+				return false
+			}
+		}
+		return true
+	case exists:
+		for _, id := range []uint{m.TrueConst, m.FalseConst} {
+			if m.EvalForm(e.left.Substitute(Const(uint(id)), e.value)) {
+				return true
+			}
+		}
+		return false
+	default:
+		panic("invalid expression class")
+	}
+}
+
+func RepeatingPermutation[T comparable](length int, elems []T) [][]T {
 	ret := make([][]T, pow(len(elems), length))
 	for i := range ret {
 		ret[i] = make([]T, length)
@@ -136,7 +131,7 @@ func RepeatingPermutation[T comparable](length int, elems []uint, set map[uint]T
 		for permIndex < len(ret) {
 			for currElem := 0; currElem < len(elems) && permIndex < len(ret); currElem++ {
 				for i := 0; i < eachElemAmount && permIndex < len(ret); i++ {
-					ret[permIndex][permElemInx] = set[elems[currElem]]
+					ret[permIndex][permElemInx] = elems[currElem]
 					permIndex++
 				}
 			}
@@ -145,124 +140,400 @@ func RepeatingPermutation[T comparable](length int, elems []uint, set map[uint]T
 	return ret
 }
 
-func allEqual[T comparable](a, b []T) bool {
-	if len(a) != len(b) {
-		return false
+// Returns all the assignments of free vars found in e such that e is true.
+func (m *Model) TrueAssigments(e *Expr) []map[uint]bool {
+	var ret []map[uint]bool
+	freeVars := e.FreeVars()
+	trueConst := Const(m.TrueConst)
+	falseConst := Const(m.FalseConst)
+	assigments := RepeatingPermutation(len(freeVars), []*Expr{trueConst, falseConst})
+	for _, assigment := range assigments {
+		subResult := e
+		for i := range freeVars {
+			subResult = subResult.Substitute(assigment[i], freeVars[i])
+		}
+		if m.EvalForm(subResult) {
+			entry := make(map[uint]bool, len(freeVars))
+			for i := range freeVars {
+				if assigment[i].Equal(trueConst) {
+					entry[freeVars[i]] = true
+				} else {
+					entry[freeVars[i]] = false
+				}
+			}
+			ret = append(ret, entry)
+		}
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	return ret
+}
+
+// Returns function arguments in order of appearance.
+func (e *Expr) Args() []*Expr {
+	if e == nil {
+		return []*Expr{}
+	}
+	switch e.class {
+	case function, comma:
+		return append(e.left.Args(), e.right.Args()...)
+	default:
+		return []*Expr{e}
+	}
+}
+
+// Extends the model such that it verifies the given skolem axioms.
+func (m *Model) ExtendModel(axioms []*SkolemAxiom) {
+	for _, axiom := range axioms {
+		assigments := m.TrueAssigments(axiom.Form.left)
+		if axiom.Term.class == constant {
+			if len(assigments) != 0 {
+				var value bool
+				for _, assigment := range assigments {
+					for _, v := range assigment {
+						value = v
+						break
+					}
+					break
+				}
+				if value {
+					m.Constants[axiom.Term.value] = struct{}{}
+				}
+			}
+		} else {
+			resultVar := axiom.Form.value
+			argVars := axiom.Term.Args()
+			var funcDefinition []BitArray
+			for _, assigment := range assigments {
+				if !assigment[resultVar] {
+					continue
+				}
+				bits := make(BitArray, 0, len(argVars)-1)
+				for _, arg := range argVars {
+					if assigment[arg.value] {
+						bits = append(bits, true)
+					} else {
+						bits = append(bits, false)
+					}
+				}
+				funcDefinition = append(funcDefinition, bits)
+			}
+			if m.Functions[axiom.Term.value] == nil {
+				m.Functions[axiom.Term.value] = map[int][]BitArray{}
+			}
+			m.Functions[axiom.Term.value][len(argVars)] = funcDefinition
+		}
+	}
+}
+
+func GenerateModel(rand *rand.Rand) *Model {
+	constants := make(map[uint]struct{}, MaxIdConst+3)
+	trueConst, falseConst := ^uint(0), ^uint(0)-1
+	constants[trueConst] = struct{}{}
+	for i := uint(0); i <= MaxIdConst; i++ {
+		if rand.Intn(2) == 0 {
+			constants[i] = struct{}{}
+		}
+	}
+	functions := make(map[uint]map[int][]BitArray, MaxIdFunc+1)
+	for i := uint(0); i <= MaxIdFunc; i++ {
+		functions[i] = make(map[int][]BitArray, MaxArgsFunc)
+		for length := 1; length <= MaxArgsFunc; length++ {
+			for _, perm := range RepeatingPermutation(length, []bool{true, false}) {
+				if rand.Intn(2) == 0 {
+					functions[i][length] = append(functions[i][length], perm)
+				}
+			}
+		}
+	}
+	propositions := make(map[uint]map[int][]BitArray, MaxIdProp+1)
+	for i := uint(0); i <= MaxIdProp; i++ {
+		propositions[i] = make(map[int][]BitArray, MaxArgsProp+1)
+		if rand.Intn(2) == 0 {
+			propositions[i][0] = []BitArray{{}}
+		}
+		for length := 1; length <= MaxArgsProp; length++ {
+			for _, perm := range RepeatingPermutation(length, []bool{true, false}) {
+				if rand.Intn(2) == 0 {
+					propositions[i][length] = append(propositions[i][length], perm)
+				}
+			}
+		}
+	}
+	return &Model{
+		TrueConst:    trueConst,
+		FalseConst:   falseConst,
+		Constants:    constants,
+		Functions:    functions,
+		Propositions: propositions,
+	}
+}
+
+// Returns a random slice of positive non zero ints that sum up to result.
+func IntSum(rand *rand.Rand, result int) []int {
+	// Create random array of 1s from [1,result].
+	len := rand.Intn(result) + 1
+	ret := make([]int, len)
+	for i := range ret {
+		ret[i] = 1
+	}
+	// Randonly assign the remaining result-sum(ret) units to the elements of ret.
+	for i := len + 1; i <= result; i++ {
+		ret[rand.Intn(len)]++
+	}
+	return ret
+}
+
+// Returns a random slice of at most n positive non zero ints that sum up to result.
+func IntnSum(rand *rand.Rand, n, result int) []int {
+	len := rand.Intn(n) + 1
+	ret := make([]int, len)
+	for i := range ret {
+		ret[i] = 1
+	}
+	for i := len + 1; i <= result; i++ {
+		ret[rand.Intn(len)]++
+	}
+	return ret
+}
+
+func GenerateTerm(rand *rand.Rand, size int) *Expr {
+	if size == 1 {
+		if rand.Intn(2) == 0 {
+			return Const(uint(rand.Intn(MaxIdConst)))
+		} else {
+			return Var(uint(rand.Intn(MaxIdVar)))
+		}
+	} else {
+		return Func(uint(rand.Intn(MaxIdFunc)), GenerateTerms(rand, size-1)...)
+	}
+}
+
+func GenerateTerms(rand *rand.Rand, size int) []*Expr {
+	sizes := IntnSum(rand, min(MaxArgsFunc, size), size)
+	args := make([]*Expr, len(sizes))
+	for i, v := range sizes {
+		args[i] = GenerateTerm(rand, v)
+	}
+	return args
+}
+
+func min[T Number](args ...T) T {
+	var ret = args[0]
+	for _, v := range args[1:] {
+		if v < ret {
+			ret = v
+		}
+	}
+	return ret
+}
+
+func GenerateForm(rand *rand.Rand, size int) *Expr {
+	generateForms := func(size int) (*Expr, *Expr) {
+		fstArgSize := rand.Intn(size-1) + 1
+		sndArgSize := size - fstArgSize
+		return GenerateForm(rand, fstArgSize), GenerateForm(rand, sndArgSize)
+	}
+	if size == 1 {
+		return Prop(uint(rand.Intn(MaxIdProp)))
+	}
+	var choice int
+	if size == 2 {
+		choice = rand.Intn(4)
+	} else {
+		choice = rand.Intn(8)
+	}
+	switch choice {
+	case 0:
+		return Prop(uint(rand.Intn(MaxIdProp)), GenerateTerms(rand, size-1)...)
+	case 1:
+		return Not(GenerateForm(rand, size-1))
+	case 2:
+		return Forall(uint(rand.Intn(MaxIdVar)), GenerateForm(rand, size-1))
+	case 3:
+		return Exists(uint(rand.Intn(MaxIdVar)), GenerateForm(rand, size-1))
+	case 4:
+		return And(generateForms(size - 1))
+	case 5:
+		return Or(generateForms(size - 1))
+	case 6:
+		return Iff(generateForms(size - 1))
+	default:
+		return Then(generateForms(size - 1))
+	}
+}
+
+func TestRemoveThen(t *testing.T) {
+	equiv := func(e *Expr, m *Model) bool {
+		e = e.Closure()
+		return m.EvalForm(e) == m.EvalForm(e.RemoveThen())
+	}
+	if err := quick.Check(equiv, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+			v[1] = reflect.ValueOf(GenerateModel(r))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestRemoveIff(t *testing.T) {
+	equiv := func(e *Expr, m *Model) bool {
+		e = e.Closure()
+		return m.EvalForm(e) == m.EvalForm(e.RemoveIff())
+	}
+	if err := quick.Check(equiv, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+			v[1] = reflect.ValueOf(GenerateModel(r))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestReduceNot(t *testing.T) {
+	equiv := func(e *Expr, m *Model) bool {
+		e = e.Closure()
+		return m.EvalForm(e) == m.EvalForm(e.ReduceNot())
+	}
+	if err := quick.Check(equiv, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+			v[1] = reflect.ValueOf(GenerateModel(r))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestPrenex(t *testing.T) {
+	equiv := func(e *Expr, m *Model) bool {
+		e = e.Closure()
+		return m.EvalForm(e) == m.EvalForm(e.RemoveIff().RemoveThen().ReduceNot().Prenex())
+	}
+	if err := quick.Check(equiv, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+			v[1] = reflect.ValueOf(GenerateModel(r))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestClosure(t *testing.T) {
+	equiv := func(e *Expr) bool {
+		return len(e.Closure().FreeVars()) == 0
+	}
+	if err := quick.Check(equiv, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func nodeNotFound(class int, value uint, e *Expr) bool {
+	stack := make([]*Expr, 1, e.size)
+	stack[0] = e
+	for len(stack) != 0 {
+		top := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if top.class == class && top.value == value {
 			return false
+		}
+		if top.left != nil {
+			stack = append(stack, top.left)
+		}
+		if top.right != nil {
+			stack = append(stack, top.right)
 		}
 	}
 	return true
 }
 
-type propResult[T comparable] struct {
-	args  []T
-	value bool
-}
-
-func CreateProp[T comparable](prop map[int][]*propResult[T]) func([]T) bool {
-	return func(args []T) bool {
-		for _, v := range prop[len(args)] {
-			if allEqual(v.args, args) {
-				return v.value
-			}
-		}
-		panic("no entry found for passed args")
+func TestUnusedConst(t *testing.T) {
+	prop := func(e *Expr) bool {
+		ret := e.UnusedConst()
+		return nodeNotFound(constant, ret, e)
+	}
+	if err := quick.Check(prop, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+		},
+	}); err != nil {
+		t.Error(err)
 	}
 }
 
-func CreateFunc[T comparable](fn map[int][][]T) func([]T) T {
-	return func(args []T) T {
-		for _, v := range fn[len(args)] {
-			if allEqual(v[:len(v)-1], args) {
-				return v[len(args)-1]
-			}
-		}
-		panic("no entry found for passed args")
+func TestUnusedVar(t *testing.T) {
+	prop := func(e *Expr) bool {
+		ret := e.UnusedVar()
+		return nodeNotFound(variable, ret, e)
+	}
+	if err := quick.Check(prop, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+		},
+	}); err != nil {
+		t.Error(err)
 	}
 }
 
-func (*Model[T]) Generate(rand *rand.Rand, size int) reflect.Value {
-	tType := reflect.TypeOf((*T)(nil)).Elem()
-	// eg: constants[2] = T means that [c2] = T
-	constants := make(map[uint]T, MaxId)
-	for i := uint(0); i < MaxId; i++ {
-		c, ok := quick.Value(tType, rand)
-		if !ok {
-			panic("cannot generate value for type " + tType.String())
-		}
-		constants[i] = c.Interface().(T)
+func TestUnusedFunc(t *testing.T) {
+	prop := func(e *Expr) bool {
+		ret := e.UnusedFunc()
+		return nodeNotFound(function, ret, e)
 	}
-	// eg: functionsMap[2][3] = {T1, T2, T3, T4} represents that f2(T1, T2, T3) = T4.
-	functionsMap := make(map[uint]map[int][][]T, MaxId)
-	for i := uint(0); i < MaxId; i++ {
-		functionsMap[i] = make(map[int][][]T, MaxArgsFunc)
+	if err := quick.Check(prop, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+		},
+	}); err != nil {
+		t.Error(err)
 	}
-	for k := range functionsMap {
-		functionsMap[k] = make(map[int][][]T, MaxArgsFunc)
-	}
-	elems := make([]uint, MaxId)
-	for i := range elems {
-		elems[i] = uint(i)
-	}
-	for functionId := uint(0); functionId < MaxId; functionId++ {
-		for length := 1; length <= MaxArgsFunc; length++ {
-			perm := RepeatingPermutation(length, elems, constants)
-			for k, v := range perm {
-				perm[k] = append(v, constants[uint(rand.Intn(MaxId))])
-			}
-			functionsMap[functionId][length] = perm
-		}
-	}
-	// eg: propositionsMap[2][3] = {args: {T1, T2, T3}, value: true} represents that
-	// [P2(T1, T2, T3)] = 1.
-	propositionsMap := map[uint]map[int][]*propResult[T]{}
-	for i := uint(0); i < MaxId; i++ {
-		propositionsMap[i] = make(map[int][]*propResult[T], MaxArgsProp)
-	}
-	for propId := uint(0); propId < MaxId; propId++ {
-		value := false
-		if rand.Intn(2) == 0 {
-			value = true
-		}
-		propositionsMap[propId][0] = []*propResult[T]{{args: []T{}, value: value}}
-		for length := 1; length <= MaxArgsProp; length++ {
-			perm := RepeatingPermutation(length, elems, constants)
-			entries := make([]*propResult[T], len(perm))
-			for k, v := range perm {
-				value := false
-				if rand.Intn(2) == 0 {
-					value = true
-				}
-				entries[k] = &propResult[T]{args: v, value: value}
-			}
-			propositionsMap[propId][length] = entries
-		}
-	}
-	functions := make(map[uint]func([]T) T, MaxId)
-	for k := uint(0); k < MaxId; k++ {
-		functions[k] = CreateFunc(functionsMap[k])
-	}
-	propositions := make(map[uint]func([]T) bool, MaxId)
-	for k := uint(0); k < MaxId; k++ {
-		propositions[k] = CreateProp(propositionsMap[k])
-	}
-	return reflect.ValueOf(&Model[T]{
-		Constants:    constants,
-		Functions:    functions,
-		Propositions: propositions,
-	})
 }
 
-func TestClosure(t *testing.T) {
-	prop := func(f *Form, m *Model[int]) bool {
-		e := (*Expr)(f)
-		return len(e.Closure().FreeVars()) == 0
+func TestUnusedProp(t *testing.T) {
+	prop := func(e *Expr) bool {
+		ret := e.UnusedProp()
+		return nodeNotFound(prop, ret, e)
 	}
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	if err := quick.Check(prop, &quick.Config{Rand: r}); err != nil {
-		t.Errorf("%v", err)
+	if err := quick.Check(prop, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSkolemize(t *testing.T) {
+	usedConstIds := make([]uint, MaxIdConst+1)
+	for i := 0; i <= MaxIdConst; i++ {
+		usedConstIds[i] = uint(i)
+	}
+	usedFuncIds := make([]uint, MaxIdFunc+1)
+	for i := 0; i <= MaxIdFunc; i++ {
+		usedFuncIds[i] = uint(i)
+	}
+	symbols := &Symbols{
+		Constants: usedConstIds,
+		Functions: usedConstIds,
+	}
+	prop := func(e *Expr, m *Model) bool {
+		e = e.Closure().RemoveIff().RemoveThen().ReduceNot().Prenex().ReduceQuantifiers()
+		ret, axioms := e.SkolemizeWith(symbols)
+		m.ExtendModel(axioms)
+		return m.EvalForm(ret) == m.EvalForm(e)
+	}
+	if err := quick.Check(prop, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			v[0] = reflect.ValueOf(GenerateForm(r, 15))
+			v[1] = reflect.ValueOf(GenerateModel(r))
+		},
+	}); err != nil {
+		t.Error(err)
 	}
 }

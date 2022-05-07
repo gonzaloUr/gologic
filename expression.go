@@ -1,6 +1,9 @@
 package gologic
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 const (
 	variable int = iota
@@ -28,7 +31,12 @@ type Expr struct {
 
 // Helper constructor that auto calculates size field.
 func newExpr(class int, value uint, left, right *Expr) *Expr {
-	size := 1
+	var size int
+	if class == comma {
+		size = 0
+	} else {
+		size = 1
+	}
 	if left != nil {
 		size += left.size
 	}
@@ -267,7 +275,7 @@ func (e *Expr) String() string {
 	case prop:
 		if e.left == nil && e.right == nil {
 			return fmt.Sprintf("P%d", e.value)
-		} else if e.left != nil {
+		} else if e.right == nil {
 			return fmt.Sprintf("P%d(%v)", e.value, e.left)
 		} else {
 			return fmt.Sprintf("P%d(%v,%v)", e.value, e.left, e.right)
@@ -320,8 +328,13 @@ func (e *Expr) Substitute(s *Expr, v uint) *Expr {
 		return e
 	case constant:
 		return e
-	case not, forall, exists:
+	case not:
 		return e.SetLeft(e.left.Substitute(s, v)).Build()
+	case forall, exists:
+		if e.value != v {
+			return e.SetLeft(e.left.Substitute(s, v)).Build()
+		}
+		return e
 	// case function, prop, comma, and, or, iff, then:
 	default:
 		return e.SetLeft(e.left.Substitute(s, v)).
@@ -396,6 +409,58 @@ func (e *Expr) ReduceNot() *Expr {
 	}
 }
 
+func (e *Expr) FreeVarsMap() map[uint]struct{} {
+	if e == nil {
+		return map[uint]struct{}{}
+	}
+	switch e.class {
+	case variable:
+		return map[uint]struct{}{e.value: {}}
+	case constant:
+		return map[uint]struct{}{}
+	case forall, exists:
+		s := e.left.FreeVarsMap()
+		delete(s, e.value)
+		return s
+	default:
+		s1, s2 := e.left.FreeVarsMap(), e.right.FreeVarsMap()
+		for k, v := range s2 {
+			s1[k] = v
+		}
+		return s1
+	}
+}
+
+func (e *Expr) FreeVars() []uint {
+	var vars []uint
+	for v := range e.FreeVarsMap() {
+		vars = append(vars, v)
+	}
+	sort.Slice(vars, func(i, j int) bool { return vars[i] < vars[j] })
+	return vars
+}
+
+func (e *Expr) ReduceQuantifiers() *Expr {
+	assertForm(e)
+	switch e.class {
+	case prop:
+		return e
+	case exists, forall:
+		if _, ok := e.left.FreeVarsMap()[e.value]; ok {
+			return e.SetLeft(e.left.ReduceQuantifiers()).Build()
+		}
+		return e.left.ReduceQuantifiers()
+	case not:
+		return e.SetLeft(e.left.ReduceQuantifiers()).Build()
+	// case and, or, then, iff:
+	default:
+		return e.
+			SetLeft(e.left.ReduceQuantifiers()).
+			SetRight(e.right.ReduceQuantifiers()).
+			Build()
+	}
+}
+
 func (e *Expr) UnusedVar() uint {
 	if e == nil {
 		return 0
@@ -440,7 +505,7 @@ func (e *Expr) UnusedFunc() uint {
 	case variable, constant:
 		return 0
 	case function:
-		return e.value + 1
+		return max(e.left.UnusedFunc(), e.right.UnusedFunc(), e.value+1)
 	case not, forall, exists:
 		return e.left.UnusedFunc()
 	// case prop, comma, and, or, iff, then:
@@ -478,14 +543,15 @@ func (e *Expr) Prenex() *Expr {
 		return e.SetLeft(e.left.Prenex()).Build()
 	// case or, and:
 	default:
+		// e = e0 or e1.
 		e0, e1 := e.left.Prenex(), e.right.Prenex()
 		if isQuantifier(e0.class) && isQuantifier(e1.class) {
-			z_0 := e.UnusedVar()
-			z_1 := z_0 + 1
-			rhs := e0.left.Substitute(Var(z_0), e0.value)
-			lhs := e1.left.Substitute(Var(z_1), e1.value)
+			z0 := e.UnusedVar()
+			z1 := z0 + 1
+			rhs := e0.left.Substitute(Var(z0), e0.value)
+			lhs := e1.left.Substitute(Var(z1), e1.value)
 			sub := binaryHelper(e.class, rhs, lhs).Prenex()
-			return unaryHelper(e0.class, z_0, unaryHelper(e1.class, z_1, sub))
+			return unaryHelper(e0.class, z0, unaryHelper(e1.class, z1, sub))
 		} else if !isQuantifier(e0.class) && !isQuantifier(e1.class) {
 			return e.SetLeft(e0).SetRight(e1).Build()
 		} else if isQuantifier(e0.class) {
@@ -495,32 +561,83 @@ func (e *Expr) Prenex() *Expr {
 		} else {
 			z := e.UnusedVar()
 			sub := binaryHelper(e.class, e0, e1.left.Substitute(Var(z), e1.value)).Prenex()
-			return unaryHelper(e0.class, z, sub)
+			return unaryHelper(e1.class, z, sub)
 		}
 	}
 }
 
-func (e *Expr) skolemizeHelper(varsAc []*Expr) *Expr {
+type SkolemAxiom struct {
+	// Skolem function or constant.
+	Term *Expr
+
+	// Corresponding exists formula for the skolem function or constant.
+	Form *Expr
+}
+
+func (s *SkolemAxiom) String() string {
+	return fmt.Sprintf("[%v, %v]", s.Term, s.Form)
+}
+
+// A collection of function and constant symbols part of a first order language.
+type Symbols struct {
+	Constants []uint
+	Functions []uint
+}
+
+func (s *Symbols) UnusedConst() uint {
+	ret := uint(0)
+	for _, v := range s.Constants {
+		ret = max(ret, v+1)
+	}
+	return ret
+}
+
+func (s *Symbols) UnusedFunc() uint {
+	ret := uint(0)
+	for _, v := range s.Functions {
+		ret = max(ret, v+1)
+	}
+	return ret
+}
+
+func (e *Expr) skolemizeHelper(s *Symbols, varsAc []*Expr) (*Expr, []*SkolemAxiom) {
 	switch e.class {
 	case exists:
-		sub := e.left.skolemizeHelper(varsAc)
+		var skolemExpr *Expr
 		if len(varsAc) == 0 {
-			constantId := sub.UnusedConst()
-			return sub.Substitute(Const(constantId), e.value)
+			skolemExpr = Const(max(e.UnusedConst(), s.UnusedConst()))
 		} else {
-			functionId := sub.UnusedFunc()
-			return sub.Substitute(Func(functionId, varsAc...), e.value)
+			skolemExpr = Func(max(e.UnusedFunc(), s.UnusedFunc()), varsAc...)
 		}
+		sub := e.left.Substitute(skolemExpr, e.value)
+		ret, defs := sub.skolemizeHelper(s, varsAc)
+		if e.left.Equal(sub) {
+			return ret, defs
+		}
+		defs = append(defs, &SkolemAxiom{skolemExpr, e})
+		return ret, defs
 	case forall:
-		return e.SetLeft(e.left.skolemizeHelper(append(varsAc, Var(e.value)))).Build()
+		sub, defs := e.left.skolemizeHelper(s, append(varsAc, Var(e.value)))
+		return e.SetLeft(sub).Build(), defs
 	default:
-		return e
+		return e, []*SkolemAxiom{}
 	}
 }
 
-func (e *Expr) Skolemize() *Expr {
+// Skolemizes a form considering the passed symbols part of the language.
+func (e *Expr) SkolemizeWith(symbols *Symbols) (*Expr, []*SkolemAxiom) {
 	assertForm(e)
-	return e.skolemizeHelper([]*Expr{})
+	r, defs := e.skolemizeHelper(symbols, []*Expr{})
+	for i := 0; i < len(defs) / 2; i++ {
+		tmp := defs[i]
+		defs[i] = defs[len(defs)-(i+1)]
+		defs[len(defs)-(i+1)] = tmp
+	}
+	return r, defs
+}
+
+func (e *Expr) Skolemize() (*Expr, []*SkolemAxiom) {
+	return e.SkolemizeWith(&Symbols{})
 }
 
 func (e *Expr) Matrix() *Expr {
@@ -551,106 +668,11 @@ func (e *Expr) CNF() *Expr {
 	}
 }
 
-func (e *Expr) FreeVars() map[uint]struct{} {
-	if e == nil {
-		return map[uint]struct{}{}
-	}
-	switch e.class {
-	case variable:
-		return map[uint]struct{}{e.value: {}}
-	case constant:
-		return map[uint]struct{}{}
-	case forall, exists:
-		s := e.left.FreeVars()
-		delete(s, e.value)
-		return s
-	default:
-		s1, s2 := e.left.FreeVars(), e.right.FreeVars()
-		for k, v := range s2 {
-			s1[k] = v
-		}
-		return s1
-	}
-}
-
 func (e *Expr) Closure() *Expr {
 	assertForm(e)
 	ret := e
-	for variable := range e.FreeVars() {
+	for _, variable := range e.FreeVars() {
 		ret = Forall(variable, ret)
 	}
 	return ret
-}
-
-type Model[T comparable] struct {
-	Constants    map[uint]T
-	Functions    map[uint]func([]T) T
-	Propositions map[uint]func([]T) bool
-}
-
-func (m *Model[T]) evalTermHelper(e *Expr) []T {
-	if e == nil {
-		return []T{}
-	}
-	switch e.class {
-	case variable:
-		panic("trying to evaluate a variable!")
-	case constant:
-		return []T{m.Constants[e.value]}
-	case comma:
-		return append(m.evalTermHelper(e.left), m.evalTermHelper(e.right)...)
-	// case function:
-	default:
-		args := m.evalTermHelper(e.left)
-		if e.right != nil {
-			args = append(args, m.evalTermHelper(e.right)...)
-		}
-		return []T{m.Functions[e.value](args)}
-	}
-}
-
-func (m *Model[T]) EvalTerm(e *Expr) T {
-	assertTerm(e)
-	return m.evalTermHelper(e)[0]
-}
-
-func (m *Model[T]) EvalForm(e *Expr) bool {
-	assertForm(e)
-	getConstants := func() []uint {
-		constants := make([]uint, len(m.Constants))
-		i := 0
-		for k := range m.Constants {
-			constants[i] = k
-		}
-		return constants
-	}
-	switch e.class {
-	case prop:
-		return m.Propositions[e.value](append(m.evalTermHelper(e.left), m.evalTermHelper(e.right)...))
-	case not:
-		return !m.EvalForm(e.left)
-	case forall:
-		for _, c := range getConstants() {
-			if !m.EvalForm(e.left.Substitute(Const(c), e.value)) {
-				return false
-			}
-		}
-		return true
-	case exists:
-		for _, c := range getConstants() {
-			if m.EvalForm(e.left.Substitute(Const(c), e.value)) {
-				return true
-			}
-		}
-		return false
-	case and:
-		return m.EvalForm(e.left) && m.EvalForm(e.right)
-	case or:
-		return m.EvalForm(e.left) || m.EvalForm(e.right)
-	case iff:
-		return m.EvalForm(e.left) == m.EvalForm(e.right)
-	// case then:
-	default:
-		return !m.EvalForm(e.left) || m.EvalForm(e.right)
-	}
 }

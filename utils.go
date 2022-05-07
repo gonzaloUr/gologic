@@ -5,16 +5,12 @@ type Number interface {
 		~int16 | ~int32 | ~int64 | ~float32 | ~float64
 }
 
-func max[T Number](a, b T) T {
-	if a > b {
-		return a
+func max[T Number](args ...T) T {
+	var ret = args[0]
+	for _, v := range args[1:] {
+		if v > ret {
+			ret = v
+		}
 	}
-	return b
-}
-
-func min[T Number](a, b T) T {
-	if a > b {
-		return b
-	}
-	return a
+	return ret
 }
