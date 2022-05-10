@@ -61,14 +61,14 @@ func (m *Model) EvalTerm(e *Expr) []bool {
 		return []bool{}
 	}
 	switch e.class {
-	case constant:
+	case ConstantClass:
 		if _, ok := m.Constants[e.value]; ok {
 			return []bool{true}
 		}
 		return []bool{false}
 	case comma:
 		return append(m.EvalTerm(e.left), m.EvalTerm(e.right)...)
-	case function:
+	case FunctionClass:
 		args := append(m.EvalTerm(e.left), m.EvalTerm(e.right)...)
 		for _, array := range m.Functions[e.value][len(args)] {
 			if array.Equal(args) {
@@ -83,7 +83,7 @@ func (m *Model) EvalTerm(e *Expr) []bool {
 
 func (m *Model) EvalForm(e *Expr) bool {
 	switch e.class {
-	case prop:
+	case PropClass:
 		args := append(m.EvalTerm(e.left), m.EvalTerm(e.right)...)
 		for _, array := range m.Functions[e.value][len(args)] {
 			if array.Equal(args) {
@@ -91,24 +91,24 @@ func (m *Model) EvalForm(e *Expr) bool {
 			}
 		}
 		return false
-	case and:
+	case AndClass:
 		return m.EvalForm(e.left) && m.EvalForm(e.right)
-	case or:
+	case OrClass:
 		return m.EvalForm(e.left) || m.EvalForm(e.right)
-	case iff:
+	case IffClass:
 		return m.EvalForm(e.left) == m.EvalForm(e.right)
-	case then:
+	case ThenClass:
 		return !m.EvalForm(e.left) || m.EvalForm(e.right)
-	case not:
+	case NotClass:
 		return !m.EvalForm(e.left)
-	case forall:
+	case ForallClass:
 		for _, id := range []uint{m.TrueConst, m.FalseConst} {
 			if !m.EvalForm(e.left.Substitute(Const(uint(id)), e.value)) {
 				return false
 			}
 		}
 		return true
-	case exists:
+	case ExistsClass:
 		for _, id := range []uint{m.TrueConst, m.FalseConst} {
 			if m.EvalForm(e.left.Substitute(Const(uint(id)), e.value)) {
 				return true
@@ -173,7 +173,7 @@ func (e *Expr) Args() []*Expr {
 		return []*Expr{}
 	}
 	switch e.class {
-	case function, comma:
+	case FunctionClass, comma:
 		return append(e.left.Args(), e.right.Args()...)
 	default:
 		return []*Expr{e}
@@ -184,7 +184,7 @@ func (e *Expr) Args() []*Expr {
 func (m *Model) ExtendModel(axioms []*SkolemAxiom) {
 	for _, axiom := range axioms {
 		assigments := m.TrueAssigments(axiom.Form.left)
-		if axiom.Term.class == constant {
+		if axiom.Term.class == ConstantClass {
 			if len(assigments) != 0 {
 				var value bool
 				for _, assigment := range assigments {
@@ -267,30 +267,16 @@ func GenerateModel(rand *rand.Rand) *Model {
 	}
 }
 
-// Returns a random slice of positive non zero ints that sum up to result.
-func IntSum(rand *rand.Rand, result int) []int {
+// Returns a random slice of positive non zero ints that sum up to result and len between [min, max].
+func IntSum(rand *rand.Rand, min, max, result int) []int {
 	// Create random array of 1s from [1,result].
-	len := rand.Intn(result) + 1
-	ret := make([]int, len)
+	ret := make([]int, rand.Intn(max)+min)
 	for i := range ret {
 		ret[i] = 1
 	}
 	// Randonly assign the remaining result-sum(ret) units to the elements of ret.
-	for i := len + 1; i <= result; i++ {
-		ret[rand.Intn(len)]++
-	}
-	return ret
-}
-
-// Returns a random slice of at most n positive non zero ints that sum up to result.
-func IntnSum(rand *rand.Rand, n, result int) []int {
-	len := rand.Intn(n) + 1
-	ret := make([]int, len)
-	for i := range ret {
-		ret[i] = 1
-	}
-	for i := len + 1; i <= result; i++ {
-		ret[rand.Intn(len)]++
+	for i := len(ret) + 1; i <= result; i++ {
+		ret[rand.Intn(len(ret))]++
 	}
 	return ret
 }
@@ -308,7 +294,7 @@ func GenerateTerm(rand *rand.Rand, size int) *Expr {
 }
 
 func GenerateTerms(rand *rand.Rand, size int) []*Expr {
-	sizes := IntnSum(rand, min(MaxArgsFunc, size), size)
+	sizes := IntSum(rand, 1, min(MaxArgsFunc, size), size)
 	args := make([]*Expr, len(sizes))
 	for i, v := range sizes {
 		args[i] = GenerateTerm(rand, v)
@@ -456,7 +442,7 @@ func nodeNotFound(class int, value uint, e *Expr) bool {
 func TestUnusedConst(t *testing.T) {
 	prop := func(e *Expr) bool {
 		ret := e.UnusedConst()
-		return nodeNotFound(constant, ret, e)
+		return nodeNotFound(ConstantClass, ret, e)
 	}
 	if err := quick.Check(prop, &quick.Config{
 		Values: func(v []reflect.Value, r *rand.Rand) {
@@ -470,7 +456,7 @@ func TestUnusedConst(t *testing.T) {
 func TestUnusedVar(t *testing.T) {
 	prop := func(e *Expr) bool {
 		ret := e.UnusedVar()
-		return nodeNotFound(variable, ret, e)
+		return nodeNotFound(VariableClass, ret, e)
 	}
 	if err := quick.Check(prop, &quick.Config{
 		Values: func(v []reflect.Value, r *rand.Rand) {
@@ -484,7 +470,7 @@ func TestUnusedVar(t *testing.T) {
 func TestUnusedFunc(t *testing.T) {
 	prop := func(e *Expr) bool {
 		ret := e.UnusedFunc()
-		return nodeNotFound(function, ret, e)
+		return nodeNotFound(FunctionClass, ret, e)
 	}
 	if err := quick.Check(prop, &quick.Config{
 		Values: func(v []reflect.Value, r *rand.Rand) {
@@ -498,7 +484,7 @@ func TestUnusedFunc(t *testing.T) {
 func TestUnusedProp(t *testing.T) {
 	prop := func(e *Expr) bool {
 		ret := e.UnusedProp()
-		return nodeNotFound(prop, ret, e)
+		return nodeNotFound(PropClass, ret, e)
 	}
 	if err := quick.Check(prop, &quick.Config{
 		Values: func(v []reflect.Value, r *rand.Rand) {
@@ -532,6 +518,35 @@ func TestSkolemize(t *testing.T) {
 		Values: func(v []reflect.Value, r *rand.Rand) {
 			v[0] = reflect.ValueOf(GenerateForm(r, 15))
 			v[1] = reflect.ValueOf(GenerateModel(r))
+		},
+	}); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestChildren(t *testing.T) {
+	prop := func(args []*Expr) bool {
+		expr := Func(0, args...)
+		ret := expr.Children()
+		if len(ret) != len(args) {
+			return false
+		}
+		for i := range ret {
+			if !ret[i].Equal(args[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if err := quick.Check(prop, &quick.Config{
+		Values: func(v []reflect.Value, r *rand.Rand) {
+			size := 20
+			sizes := IntSum(r, 2, min(MaxArgsProp, size), size)
+			args := make([]*Expr, len(sizes))
+			for i, v := range sizes {
+				args[i] = GenerateTerm(r, v)
+			}
+			v[0] = reflect.ValueOf(args)
 		},
 	}); err != nil {
 		t.Error(err)

@@ -6,27 +6,74 @@ import (
 )
 
 const (
-	variable int = iota
-	constant
-	function
-	prop
+	VariableClass = iota
+	ConstantClass
+	FunctionClass
+	PropClass
 	comma
-	not
-	forall
-	exists
-	and
-	or
-	iff
-	then
+	NotClass
+	ForallClass
+	ExistsClass
+	AndClass
+	OrClass
+	IffClass
+	ThenClass
 )
 
-// Represents a first order logic formula or term as a binary tree.
+func IsTerm(class int) bool {
+	return class == VariableClass || class == ConstantClass || class == FunctionClass
+}
+
+func IsForm(class int) bool {
+	return !IsTerm(class) && class != comma
+}
+
+func IsQuantifier(class int) bool {
+	return class == ExistsClass || class == ForallClass
+}
+
+func IsUnary(class int) bool {
+	return class == NotClass || class == ExistsClass || class == ForallClass
+}
+
+func IsBinary(class int) bool {
+	return class == AndClass || class == OrClass || class == IffClass || class == ThenClass
+}
+
+// A tree node that represents a first order logic formula.
 type Expr struct {
 	class int
 	value uint
 	left  *Expr
 	right *Expr
 	size  int
+}
+
+// Quantifier variable, function, constant or variable id.
+func (e *Expr) Value() uint {
+	return e.value
+}
+
+// Returns formula class.
+func (e *Expr) Class() int {
+	return e.class
+}
+
+// Returns all children of the given node.
+func (e *Expr) Children() []*Expr {
+	var ret []*Expr
+	if e.left != nil {
+		ret = append(ret, e.left)
+	}
+	if e.right != nil {
+		curr := e.right
+		for curr.class == comma {
+			ret = append(ret, curr.left)
+			curr = curr.right
+		}
+		ret = append(ret, curr)
+	}
+	return ret
 }
 
 // Helper constructor that auto calculates size field.
@@ -52,209 +99,114 @@ func newExpr(class int, value uint, left, right *Expr) *Expr {
 	}
 }
 
-type UpdateExpr struct {
-	Expr
-	original     *Expr
-	updatedClass bool
-	updatedValue bool
-	updatedLeft  bool
-	updatedRight bool
-}
-
-func (u *UpdateExpr) SetClass(class int) *UpdateExpr {
-	u.updatedClass = true
-	u.class = class
-	return u
-}
-
-func (u *UpdateExpr) SetValue(value uint) *UpdateExpr {
-	u.updatedValue = true
-	u.value = value
-	return u
-}
-
-func (u *UpdateExpr) SetLeft(left *Expr) *UpdateExpr {
-	u.updatedLeft = true
-	u.left = left
-	return u
-}
-
-func (u *UpdateExpr) SetRight(right *Expr) *UpdateExpr {
-	u.updatedRight = true
-	u.right = right
-	return u
-}
-
-func (e *Expr) SetClass(class int) *UpdateExpr {
-	return (&UpdateExpr{original: e}).SetClass(class)
-}
-
-func (e *Expr) SetValue(value uint) *UpdateExpr {
-	return (&UpdateExpr{original: e}).SetValue(value)
-}
-
-func (e *Expr) SetLeft(left *Expr) *UpdateExpr {
-	return (&UpdateExpr{original: e}).SetLeft(left)
-}
-
-func (e *Expr) SetRight(right *Expr) *UpdateExpr {
-	return (&UpdateExpr{original: e}).SetRight(right)
-}
-
-func (u *UpdateExpr) Build() *Expr {
-	class := u.original.class
-	value := u.original.value
-	left := u.original.left
-	right := u.original.right
-	if u.updatedClass {
-		class = u.class
+// Returns s[0] □ (s[1] □ ... (s[n-1] □ s[n])...) where □ = class.
+func sliceToTree(class int, s []*Expr) (*Expr, *Expr) {
+	if len(s) == 0 {
+		return nil, nil
 	}
-	if u.updatedValue {
-		value = u.value
+	if len(s) == 1 {
+		return s[0], nil
 	}
-	if u.updatedLeft {
-		left = u.left
+	left, right := s[0], s[len(s)-1]
+	for i := len(s)-2; i >= 1; i-- {
+		right = newExpr(class, 0, s[i], right)
 	}
-	if u.updatedRight {
-		right = u.right
-	}
-	changed := class != u.original.class ||
-		value != u.original.value ||
-		left != u.original.left ||
-		right != u.original.right
-	if changed {
-		return newExpr(class, value, left, right)
-	}
-	return u.original
+	return left, right
 }
 
 // Returns the nth variable xₙ.
 func Var(n uint) *Expr {
-	return newExpr(variable, n, nil, nil)
+	return newExpr(VariableClass, n, nil, nil)
 }
 
 // Creates the nth constant cₙ.
 func Const(n uint) *Expr {
-	return newExpr(constant, n, nil, nil)
-}
-
-func isTerm(class int) bool {
-	return class == variable || class == constant || class == function
-}
-
-func assertNonNil(e *Expr) {
-	if e == nil {
-		panic("non nil expression expected")
-	}
-}
-
-func assertTerm(e *Expr) {
-	assertNonNil(e)
-	if !isTerm(e.class) {
-		panic("term expression expected")
-	}
-}
-
-func assertForm(e *Expr) {
-	assertNonNil(e)
-	if isTerm(e.class) {
-		panic("form expression expected")
-	}
-}
-
-// Helper function for Func and Prop constructors.
-func funcPropHelper(n uint, args []*Expr, class int, noArgs func() *Expr) *Expr {
-	if len(args) == 0 {
-		return noArgs()
-	}
-	if len(args) == 1 {
-		assertTerm(args[0])
-		return newExpr(class, n, args[0], nil)
-	}
-	if len(args) == 2 {
-		assertTerm(args[0])
-		assertTerm(args[1])
-		return newExpr(class, n, args[0], args[1])
-	}
-	assertTerm(args[len(args)-1])
-	assertTerm(args[len(args)-2])
-	cur := newExpr(comma, 0, args[len(args)-1], args[len(args)-2])
-	for i := len(args) - 3; i > 0; i-- {
-		assertTerm(args[i])
-		cur = newExpr(comma, 0, args[i], cur)
-	}
-	assertTerm(args[0])
-	return newExpr(class, n, args[0], cur)
+	return newExpr(ConstantClass, n, nil, nil)
 }
 
 // Creates a function term with symbol fₙ taking 1 or more term arguments.
 func Func(n uint, args ...*Expr) *Expr {
-	return funcPropHelper(n, args, function, func() *Expr {
+	left, right := sliceToTree(comma, args)
+	if left == nil && right == nil {
 		panic("at least 1 argument expected")
-	})
+	}
+	return newExpr(FunctionClass, n, left, right)
 }
 
 // Creates a proposition with symbol Pₙ taking 0 or more term arguments.
 func Prop(n uint, args ...*Expr) *Expr {
-	return funcPropHelper(n, args, prop, func() *Expr {
-		return newExpr(prop, n, nil, nil)
-	})
+	left, right := sliceToTree(comma, args)
+	return newExpr(PropClass, n, left, right)
 }
 
-// Helper function for unary connective constructors (not, forall, exists).
-func unaryHelper(class int, value uint, e *Expr) *Expr {
-	assertForm(e)
+func Unary(class int, value uint, e *Expr) *Expr {
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
+	if !IsUnary(class) {
+		panic("unary class expected")
+	}
 	return newExpr(class, value, e, nil)
 }
 
 // Given the formula e returns the formula ¬e.
 func Not(e *Expr) *Expr {
-	return unaryHelper(not, 0, e)
+	return Unary(NotClass, 0, e)
 }
 
 // Given the formula e returns the formula (∀ xₙ)e.
 func Forall(n uint, e *Expr) *Expr {
-	return unaryHelper(forall, n, e)
+	return Unary(ForallClass, n, e)
 }
 
 // Given the formula e returns the formula (∃ xₙ)e.
 func Exists(n uint, e *Expr) *Expr {
-	return unaryHelper(exists, n, e)
+	return Unary(ExistsClass, n, e)
 }
 
-// Helper function for binary connective constructors (and, or, then, iff).
-func binaryHelper(class int, e ...*Expr) *Expr {
-	if len(e) < 2 {
+func Binary(class int, e ...*Expr) *Expr {
+	if !IsBinary(class) {
+		panic("binary class expected")
+	}
+	left, right := sliceToTree(class, e)
+	if left == nil || right == nil {
 		panic("at least 2 arguments expected")
 	}
-	assertForm(e[len(e)-1])
-	assertForm(e[len(e)-2])
-	curr := newExpr(class, 0, e[len(e)-1], e[len(e)-2])
-	for i := len(e) - 3; i >= 0; i-- {
-		assertForm(e[i])
-		curr = newExpr(class, 0, curr, e[i])
-	}
-	return curr
+	return newExpr(class, 0, left, right)
 }
 
 // Given the formulas e₁, e₂, ..., eₙ returns the formula e₁ ∧ e₂ ∧ ... ∧ eₙ
 func And(e ...*Expr) *Expr {
-	return binaryHelper(and, e...)
+	return Binary(AndClass, e...)
 }
 
 // Given the formulas e₁, e₂, ..., eₙ returns the formula e₁ ∨ e₂ ∨ ... ∨ eₙ
 func Or(e ...*Expr) *Expr {
-	return binaryHelper(or, e...)
+	return Binary(OrClass, e...)
 }
 
-// Given the formulas e₁, e₂, ..., eₙ returns the formula e₁ ⇔ (e₂ ⇔ (e₃ ⇔ ... (eₙ₋₁ ⇔ eₙ)...)).
+// Given the formulas e₁, e₂, ..., eₙ returns the formula e₁ ⇔ (e₂ ⇔ ... (eₙ₋₁ ⇔ eₙ)...).
 func Iff(e ...*Expr) *Expr {
-	return binaryHelper(iff, e...)
+	return Binary(IffClass, e...)
 }
 
-// Given the formulas e₁, e₂, ..., eₙ returns the formula e₁ ⇒ (e₂ ⇒ (e₃ ⇒ ... (eₙ₋₁ ⇒ eₙ)...)).
+// Given the formulas e₁, e₂, ..., eₙ returns the formula e₁ ⇒ (e₂ ⇒ ... (eₙ₋₁ ⇒ eₙ)...).
 func Then(e ...*Expr) *Expr {
-	return binaryHelper(then, e...)
+	return Binary(ThenClass, e...)
+}
+
+func (e *Expr) setLeft(left *Expr) *Expr {
+	if e.left == left {
+		return e
+	}
+	return newExpr(e.class, e.value, left, e.right)
+}
+
+func (e *Expr) setRight(right *Expr) *Expr {
+	if e.right == right {
+		return e
+	}
+	return newExpr(e.class, e.value, e.left, right)
 }
 
 func (e *Expr) String() string {
@@ -262,17 +214,17 @@ func (e *Expr) String() string {
 		return ""
 	}
 	switch e.class {
-	case variable:
+	case VariableClass:
 		return fmt.Sprintf("x%d", e.value)
-	case constant:
+	case ConstantClass:
 		return fmt.Sprintf("c%d", e.value)
-	case function:
+	case FunctionClass:
 		if e.right == nil {
 			return fmt.Sprintf("f%d(%v)", e.value, e.left)
 		} else {
 			return fmt.Sprintf("f%d(%v,%v)", e.value, e.left, e.right)
 		}
-	case prop:
+	case PropClass:
 		if e.left == nil && e.right == nil {
 			return fmt.Sprintf("P%d", e.value)
 		} else if e.right == nil {
@@ -282,21 +234,57 @@ func (e *Expr) String() string {
 		}
 	case comma:
 		return fmt.Sprintf("%v,%v", e.left, e.right)
-	case not:
-		return fmt.Sprintf("¬%v", e.left)
-	case forall:
+	case NotClass:
+		if IsUnary(e.left.class) || e.left.class == PropClass {
+			return fmt.Sprintf("¬%v", e.left)
+		}
+		return fmt.Sprintf("¬(%v)", e.left)
+	case ForallClass:
+		if IsUnary(e.left.class) || e.left.class == PropClass {
+			return fmt.Sprintf("∀x%d%v", e.value, e.left)
+		}
 		return fmt.Sprintf("∀x%d(%v)", e.value, e.left)
-	case exists:
+	case ExistsClass:
+		if IsUnary(e.left.class) || e.left.class == PropClass {
+			return fmt.Sprintf("∃x%d%v", e.value, e.left)
+		}
 		return fmt.Sprintf("∃x%d(%v)", e.value, e.left)
-	case and:
-		return fmt.Sprintf("(%v ∧ %v)", e.left, e.right)
-	case or:
-		return fmt.Sprintf("(%v ∨ %v)", e.left, e.right)
-	case iff:
-		return fmt.Sprintf("(%v ⇔ %v)", e.left, e.right)
-	// case then:
+	case AndClass, OrClass:
+		var left, right string
+		if IsBinary(e.left.class) && e.left.class != e.class {
+			left = fmt.Sprintf("(%v)", e.left)
+		} else {
+			left = fmt.Sprintf("%v", e.left)
+		}
+		if IsBinary(e.right.class) && e.right.class != e.class {
+			right = fmt.Sprintf("(%v)", e.right)
+		} else {
+			right = fmt.Sprintf("%v", e.right)
+		}
+		if e.class == AndClass {
+			return fmt.Sprintf("%s ∧ %s", left, right)
+		} else {
+			return fmt.Sprintf("%v ∨ %v", left, right)
+		}
+	// case IffClass, ThenClass:
 	default:
-		return fmt.Sprintf("(%v ⇒ %v)", e.left, e.right)
+		var left, right string
+		if IsBinary(e.left.class) {
+			left = fmt.Sprintf("(%v)", e.left)
+		} else {
+			left = fmt.Sprintf("%v", e.left)
+		}
+		if IsBinary(e.right.class) {
+			right = fmt.Sprintf("(%v)", e.right)
+		} else {
+			right = fmt.Sprintf("%v", e.right)
+		}
+		switch e.class {
+		case IffClass:
+			return fmt.Sprintf("%v ⇔ %v", left, right)
+		default:
+			return fmt.Sprintf("%v ⇒ %v", left, right)
+		}
 	}
 }
 
@@ -321,37 +309,38 @@ func (e *Expr) Substitute(s *Expr, v uint) *Expr {
 		return nil
 	}
 	switch e.class {
-	case variable:
-		if e.class == variable && e.value == v {
+	case VariableClass:
+		if e.class == VariableClass && e.value == v {
 			return s
 		}
 		return e
-	case constant:
+	case ConstantClass:
 		return e
-	case not:
-		return e.SetLeft(e.left.Substitute(s, v)).Build()
-	case forall, exists:
+	case NotClass:
+		return e.setLeft(e.left.Substitute(s, v))
+	case ForallClass, ExistsClass:
 		if e.value != v {
-			return e.SetLeft(e.left.Substitute(s, v)).Build()
+			return e.setLeft(e.left.Substitute(s, v))
 		}
 		return e
 	// case function, prop, comma, and, or, iff, then:
 	default:
-		return e.SetLeft(e.left.Substitute(s, v)).
-			SetRight(e.right.Substitute(s, v)).
-			Build()
+		return e.setLeft(e.left.Substitute(s, v)).
+			setRight(e.right.Substitute(s, v))
 	}
 }
 
 func (e *Expr) RemoveIff() *Expr {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	switch e.class {
-	case prop:
+	case PropClass:
 		return e
-	case not, forall, exists:
-		return e.SetLeft(e.left.RemoveIff()).Build()
-	case and, or, then:
-		return e.SetLeft(e.left.RemoveIff()).SetRight(e.right.RemoveIff()).Build()
+	case NotClass, ForallClass, ExistsClass:
+		return e.setLeft(e.left.RemoveIff())
+	case AndClass, OrClass, ThenClass:
+		return e.setLeft(e.left.RemoveIff()).setRight(e.right.RemoveIff())
 	// case iff:
 	default:
 		newLeft, newRight := e.left.RemoveIff(), e.right.RemoveIff()
@@ -360,14 +349,16 @@ func (e *Expr) RemoveIff() *Expr {
 }
 
 func (e *Expr) RemoveThen() *Expr {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	switch e.class {
-	case prop:
+	case PropClass:
 		return e
-	case not, forall, exists:
-		return e.SetLeft(e.left.RemoveThen()).Build()
-	case and, or, iff:
-		return e.SetLeft(e.left.RemoveThen()).SetRight(e.right.RemoveThen()).Build()
+	case NotClass, ForallClass, ExistsClass:
+		return e.setLeft(e.left.RemoveThen())
+	case AndClass, OrClass, IffClass:
+		return e.setLeft(e.left.RemoveThen()).setRight(e.right.RemoveThen())
 	// case then:
 	default:
 		return Or(Not(e.left.RemoveThen()), e.right.RemoveThen())
@@ -375,30 +366,32 @@ func (e *Expr) RemoveThen() *Expr {
 }
 
 func (e *Expr) ReduceNot() *Expr {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	switch e.class {
-	case prop:
+	case PropClass:
 		return e
-	case exists, forall:
-		return e.SetLeft(e.left.ReduceNot()).Build()
-	case or, and, iff, then:
-		return e.SetLeft(e.left.ReduceNot()).SetRight(e.right.ReduceNot()).Build()
+	case ExistsClass, ForallClass:
+		return e.setLeft(e.left.ReduceNot())
+	case OrClass, AndClass, IffClass, ThenClass:
+		return e.setLeft(e.left.ReduceNot()).setRight(e.right.ReduceNot())
 	// case not:
 	default:
 		switch e.left.class {
-		case not:
+		case NotClass:
 			return e.left.left.ReduceNot()
-		case and:
+		case AndClass:
 			return Or(Not(e.left.left).ReduceNot(), Not(e.left.right).ReduceNot())
-		case or:
+		case OrClass:
 			return And(Not(e.left.left).ReduceNot(), Not(e.left.right).ReduceNot())
-		case forall:
+		case ForallClass:
 			return Exists(e.left.value, Not(e.left.left).ReduceNot())
-		case exists:
+		case ExistsClass:
 			return Forall(e.left.value, Not(e.left.left).ReduceNot())
-		case then:
+		case ThenClass:
 			return And(e.left.left, Not(e.left.right).ReduceNot())
-		case iff:
+		case IffClass:
 			e1 := And(e.left.left, Not(e.left.right).ReduceNot())
 			e2 := And(e.left.right, Not(e.left.left).ReduceNot())
 			return Or(e1, e2)
@@ -414,11 +407,11 @@ func (e *Expr) FreeVarsMap() map[uint]struct{} {
 		return map[uint]struct{}{}
 	}
 	switch e.class {
-	case variable:
+	case VariableClass:
 		return map[uint]struct{}{e.value: {}}
-	case constant:
+	case ConstantClass:
 		return map[uint]struct{}{}
-	case forall, exists:
+	case ForallClass, ExistsClass:
 		s := e.left.FreeVarsMap()
 		delete(s, e.value)
 		return s
@@ -441,23 +434,24 @@ func (e *Expr) FreeVars() []uint {
 }
 
 func (e *Expr) ReduceQuantifiers() *Expr {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	switch e.class {
-	case prop:
+	case PropClass:
 		return e
-	case exists, forall:
+	case ExistsClass, ForallClass:
 		if _, ok := e.left.FreeVarsMap()[e.value]; ok {
-			return e.SetLeft(e.left.ReduceQuantifiers()).Build()
+			return e.setLeft(e.left.ReduceQuantifiers())
 		}
 		return e.left.ReduceQuantifiers()
-	case not:
-		return e.SetLeft(e.left.ReduceQuantifiers()).Build()
+	case NotClass:
+		return e.setLeft(e.left.ReduceQuantifiers())
 	// case and, or, then, iff:
 	default:
 		return e.
-			SetLeft(e.left.ReduceQuantifiers()).
-			SetRight(e.right.ReduceQuantifiers()).
-			Build()
+			setLeft(e.left.ReduceQuantifiers()).
+			setRight(e.right.ReduceQuantifiers())
 	}
 }
 
@@ -466,13 +460,13 @@ func (e *Expr) UnusedVar() uint {
 		return 0
 	}
 	switch e.class {
-	case variable:
+	case VariableClass:
 		return e.value + 1
-	case constant:
+	case ConstantClass:
 		return 0
-	case not:
+	case NotClass:
 		return e.left.UnusedVar()
-	case forall, exists:
+	case ForallClass, ExistsClass:
 		return max(e.value+1, e.left.UnusedVar())
 	// case prop, comma, and, or, iff, then:
 	default:
@@ -485,11 +479,11 @@ func (e *Expr) UnusedConst() uint {
 		return 0
 	}
 	switch e.class {
-	case variable:
+	case VariableClass:
 		return 0
-	case constant:
+	case ConstantClass:
 		return e.value + 1
-	case not, forall, exists:
+	case NotClass, ForallClass, ExistsClass:
 		return e.left.UnusedConst()
 	// case prop, comma, and, or, iff, then:
 	default:
@@ -502,11 +496,11 @@ func (e *Expr) UnusedFunc() uint {
 		return 0
 	}
 	switch e.class {
-	case variable, constant:
+	case VariableClass, ConstantClass:
 		return 0
-	case function:
+	case FunctionClass:
 		return max(e.left.UnusedFunc(), e.right.UnusedFunc(), e.value+1)
-	case not, forall, exists:
+	case NotClass, ForallClass, ExistsClass:
 		return e.left.UnusedFunc()
 	// case prop, comma, and, or, iff, then:
 	default:
@@ -515,11 +509,13 @@ func (e *Expr) UnusedFunc() uint {
 }
 
 func (e *Expr) UnusedProp() uint {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	switch e.class {
-	case prop:
+	case PropClass:
 		return e.value + 1
-	case not, forall, exists:
+	case NotClass, ForallClass, ExistsClass:
 		return e.left.UnusedProp()
 	// case and, or, then, iff:
 	default:
@@ -527,41 +523,39 @@ func (e *Expr) UnusedProp() uint {
 	}
 }
 
-func isQuantifier(class int) bool {
-	return class == exists || class == forall
-}
-
 func (e *Expr) Prenex() *Expr {
-	assertForm(e)
-	if e.class == iff || e.class == then {
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
+	if e.class == IffClass || e.class == ThenClass {
 		panic("trying to prenex a formula with iff or then")
 	}
 	switch e.class {
-	case prop:
+	case PropClass:
 		return e
-	case not, forall, exists:
-		return e.SetLeft(e.left.Prenex()).Build()
+	case NotClass, ForallClass, ExistsClass:
+		return e.setLeft(e.left.Prenex())
 	// case or, and:
 	default:
 		// e = e0 or e1.
 		e0, e1 := e.left.Prenex(), e.right.Prenex()
-		if isQuantifier(e0.class) && isQuantifier(e1.class) {
+		if IsQuantifier(e0.class) && IsQuantifier(e1.class) {
 			z0 := e.UnusedVar()
 			z1 := z0 + 1
 			rhs := e0.left.Substitute(Var(z0), e0.value)
 			lhs := e1.left.Substitute(Var(z1), e1.value)
-			sub := binaryHelper(e.class, rhs, lhs).Prenex()
-			return unaryHelper(e0.class, z0, unaryHelper(e1.class, z1, sub))
-		} else if !isQuantifier(e0.class) && !isQuantifier(e1.class) {
-			return e.SetLeft(e0).SetRight(e1).Build()
-		} else if isQuantifier(e0.class) {
+			sub := Binary(e.class, rhs, lhs).Prenex()
+			return Unary(e0.class, z0, Unary(e1.class, z1, sub))
+		} else if !IsQuantifier(e0.class) && !IsQuantifier(e1.class) {
+			return e.setLeft(e0).setRight(e1)
+		} else if IsQuantifier(e0.class) {
 			z := e.UnusedVar()
-			sub := binaryHelper(e.class, e0.left.Substitute(Var(z), e0.value), e1).Prenex()
-			return unaryHelper(e0.class, z, sub)
+			sub := Binary(e.class, e0.left.Substitute(Var(z), e0.value), e1).Prenex()
+			return Unary(e0.class, z, sub)
 		} else {
 			z := e.UnusedVar()
-			sub := binaryHelper(e.class, e0, e1.left.Substitute(Var(z), e1.value)).Prenex()
-			return unaryHelper(e1.class, z, sub)
+			sub := Binary(e.class, e0, e1.left.Substitute(Var(z), e1.value)).Prenex()
+			return Unary(e1.class, z, sub)
 		}
 	}
 }
@@ -602,7 +596,7 @@ func (s *Symbols) UnusedFunc() uint {
 
 func (e *Expr) skolemizeHelper(s *Symbols, varsAc []*Expr) (*Expr, []*SkolemAxiom) {
 	switch e.class {
-	case exists:
+	case ExistsClass:
 		var skolemExpr *Expr
 		if len(varsAc) == 0 {
 			skolemExpr = Const(max(e.UnusedConst(), s.UnusedConst()))
@@ -616,9 +610,9 @@ func (e *Expr) skolemizeHelper(s *Symbols, varsAc []*Expr) (*Expr, []*SkolemAxio
 		}
 		defs = append(defs, &SkolemAxiom{skolemExpr, e})
 		return ret, defs
-	case forall:
+	case ForallClass:
 		sub, defs := e.left.skolemizeHelper(s, append(varsAc, Var(e.value)))
-		return e.SetLeft(sub).Build(), defs
+		return e.setLeft(sub), defs
 	default:
 		return e, []*SkolemAxiom{}
 	}
@@ -626,7 +620,9 @@ func (e *Expr) skolemizeHelper(s *Symbols, varsAc []*Expr) (*Expr, []*SkolemAxio
 
 // Skolemizes a form considering the passed symbols part of the language.
 func (e *Expr) SkolemizeWith(symbols *Symbols) (*Expr, []*SkolemAxiom) {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	r, defs := e.skolemizeHelper(symbols, []*Expr{})
 	for i := 0; i < len(defs) / 2; i++ {
 		tmp := defs[i]
@@ -641,8 +637,10 @@ func (e *Expr) Skolemize() (*Expr, []*SkolemAxiom) {
 }
 
 func (e *Expr) Matrix() *Expr {
-	assertForm(e)
-	for isQuantifier(e.class) {
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
+	for IsQuantifier(e.class) {
 		e = e.left
 	}
 	return e
@@ -650,18 +648,18 @@ func (e *Expr) Matrix() *Expr {
 
 func (e *Expr) CNF() *Expr {
 	switch e.class {
-	case prop, not:
+	case PropClass, NotClass:
 		return e
-	case and:
-		return e.SetLeft(e.left.CNF()).SetRight(e.right.CNF()).Build()
-	case or:
+	case AndClass:
+		return e.setLeft(e.left.CNF()).setRight(e.right.CNF())
+	case OrClass:
 		e0, e1 := e.left.CNF(), e.right.CNF()
-		if e0.class == and {
+		if e0.class == AndClass {
 			return And(Or(e0.left, e1).CNF(), Or(e1, e0.right).CNF())
-		} else if e1.class == and {
+		} else if e1.class == AndClass {
 			return And(Or(e0, e1.left).CNF(), Or(e0, e1.right).CNF())
 		} else {
-			return e.SetLeft(e0).SetLeft(e1).Build()
+			return e.setLeft(e0).setLeft(e1)
 		}
 	default:
 		panic("found invalid connective")
@@ -669,7 +667,9 @@ func (e *Expr) CNF() *Expr {
 }
 
 func (e *Expr) Closure() *Expr {
-	assertForm(e)
+	if !IsForm(e.class) {
+		panic("form expected")
+	}
 	ret := e
 	for _, variable := range e.FreeVars() {
 		ret = Forall(variable, ret)
