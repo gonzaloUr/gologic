@@ -126,20 +126,21 @@ func MGU(a, b *Expr) *Substitution {
 				s1[i] = s1[i].ApplySubstitution(sub)
 				s2[i] = s2[i].ApplySubstitution(sub)
 			}
-		} else if x.class == y.class {
-			if x.value == y.value && (x.class == PropClass || x.class == FunctionClass) {
-				xArgs, yArgs := x.Children(), y.Children()
-				if len(xArgs) != len(yArgs) {
-					return nil
-				}
-				for i := range xArgs {
-					s1 = append(s1, xArgs[i])
-					s2 = append(s2, yArgs[i])
-				}
-			} else if x.class == NotClass {
-				s1 = append(s1, x.left)
-				s2 = append(s2, y.left)
+		} else if x.class == y.class &&
+			x.value == y.value &&
+			(x.class == PropClass || x.class == FunctionClass) {
+
+			xArgs, yArgs := x.Children(), y.Children()
+			if len(xArgs) != len(yArgs) {
+				return nil
 			}
+			for i := range xArgs {
+				s1 = append(s1, xArgs[i])
+				s2 = append(s2, yArgs[i])
+			}
+		} else if x.class == y.class && x.class == NotClass {
+			s1 = append(s1, x.left)
+			s2 = append(s2, y.left)
 		} else if x.Equal(y) {
 			continue
 		} else {
@@ -149,14 +150,19 @@ func MGU(a, b *Expr) *Substitution {
 	return ret
 }
 
-func Resolve(c1, c2 []*Expr, i, j int) ([]*Expr, *Substitution) {
+type ResolveResult struct {
+	Result []*Expr
+	Sub    *Substitution
+}
+
+func Resolve(c1, c2 []*Expr, i, j int) *ResolveResult {
 	var sub *Substitution
 	if tmp := MGU(c1[i], Not(c2[j])); tmp != nil {
 		sub = tmp
 	} else if tmp := MGU(Not(c1[i]), c2[j]); tmp != nil {
 		sub = tmp
 	} else {
-		return nil, nil
+		return nil
 	}
 	var ret []*Expr
 	for inx, v := range c1 {
@@ -169,5 +175,45 @@ func Resolve(c1, c2 []*Expr, i, j int) ([]*Expr, *Substitution) {
 			ret = append(ret, v.ApplySubstitution(sub))
 		}
 	}
-	return ret, sub
+	return &ResolveResult{ret, sub}
+}
+
+type Rule struct {
+	Head *Expr
+	Body []*Expr
+}
+
+type SLD struct {
+	Rules []*Rule
+	Goal  []*Expr
+}
+
+func Run(sld *SLD) *Substitution {
+	var goal []*Expr
+	for _, literal := range sld.Goal {
+		goal = append(goal, Not(literal))
+	}
+	ret := NewSubstitution(nil, nil)
+	for len(goal) != 0 {
+		var changed bool
+		for _, rule := range sld.Rules {
+			clause := make([]*Expr, 0, len(rule.Body)+1)
+			clause = append(clause, rule.Head)
+			for _, v := range rule.Body {
+				clause = append(clause, Not(v))
+			}
+			for j := range goal {
+				if r := Resolve(clause, goal, 0, j); r != nil {
+					goal = r.Result
+					ret = ret.Compose(r.Sub)
+					changed = true
+					break
+				}
+			}
+			if changed {
+				break
+			}
+		}
+	}
+	return ret
 }

@@ -14,7 +14,22 @@ func ExampleMGU() {
 func ExampleResolve() {
 	a := []*Expr{Prop(0, Var(0)), Prop(1, Var(0))}
 	b := []*Expr{Not(Prop(0, Const(0))), Prop(2, Var(1))}
-	r, _ := Resolve(a, b, 0, 0)
-	fmt.Println(r)
+	r := Resolve(a, b, 0, 0)
+	fmt.Println(r.Result)
+	// Output:
+}
+
+func ExampleSLD() {
+	prog := &SLD{
+		[]*Rule{
+			{Prop(4, Const(1)), []*Expr{}},
+			{Prop(0, Var(0)), []*Expr{Prop(1, Var(0))}},
+			{Prop(1, Var(1)), []*Expr{Prop(2, Var(1))}},
+			{Prop(2, Var(2)), []*Expr{Prop(3, Var(2))}},
+			{Prop(3, Var(3)), []*Expr{Prop(4, Var(3))}},
+		},
+		[]*Expr{Prop(0, Var(4))},
+	}
+	fmt.Println(Run(prog))
 	// Output:
 }
