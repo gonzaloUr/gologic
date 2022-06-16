@@ -133,10 +133,9 @@ func (g *Grammar) First(k int) map[string][][]string {
 					break
 				}
 			}
-			if len(x) < k && len(x) != len(rule) {
-				continue
+			if len(x) == k || (len(x) < k && len(x) == len(rule)) {
+				sets[nonTerminal] = append(sets[nonTerminal], x)
 			}
-			sets[nonTerminal] = append(sets[nonTerminal], x)
 		}
 	}
 	hasChanged := true
@@ -269,42 +268,32 @@ func (g *Grammar) IsLL1() *LL1Conflict {
 	return nil
 }
 
-type LL1TableEntry struct {
-	NonTerminal string
-	RuleIndex   int
-	IsPop       bool
-	IsAccept    bool
-}
-
-func (g *Grammar) LL1Table() map[string]map[string]*LL1TableEntry {
-	ret := make(map[string]map[string]*LL1TableEntry, len(g.nonTerminals))
+func (g *Grammar) LL1Table(epsilon string) map[string]map[string][]string {
+	ret := make(map[string]map[string][]string, len(g.nonTerminals))
 	for nonTerminal := range g.nonTerminals {
-		ret[nonTerminal] = map[string]*LL1TableEntry{}
+		ret[nonTerminal] = map[string][]string{}
 	}
 	first := g.First(1)
 	follow := g.Follow(1)
 	for nonTerminal := range g.nonTerminals {
-		for i, rule := range g.rules[nonTerminal] {
+		for _, rule := range g.rules[nonTerminal] {
 			var empty bool
 			for _, v := range First(1, first, rule) {
 				if len(v) == 0 {
 					empty = true
 					continue
 				}
-				ret[nonTerminal][v[0]] = &LL1TableEntry{
-					NonTerminal: nonTerminal,
-					RuleIndex:   i,
-				}
+				ret[nonTerminal][v[0]] = rule
 			}
 			if empty {
 				for _, v := range follow[nonTerminal] {
+					var lookahead string
 					if len(v) == 0 {
-						continue
+						lookahead = epsilon
+					} else {
+						lookahead = v[0]
 					}
-					ret[nonTerminal][v[0]] = &LL1TableEntry{
-						NonTerminal: nonTerminal,
-						RuleIndex:   i,
-					}
+					ret[nonTerminal][lookahead] = rule
 				}
 			}
 		}
