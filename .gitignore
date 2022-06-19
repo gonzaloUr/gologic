@@ -1,3 +1,6 @@
 docs/**/*
 !docs/**/*.md
+examples/**/*
+!examples/**/*.go
+!examples/**/*.ebnf
 .vscode/

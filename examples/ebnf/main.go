@@ -2,11 +2,10 @@ package main
 
 import (
 	"bufio"
-	"flag"
+	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"os"
+	"net/http"
 	"unicode"
 )
 
@@ -166,14 +165,15 @@ func IsTerminal(symbol Symbol) bool {
 }
 
 type Token struct {
-	Type   Symbol
-	Pos    int
-	Column int
-	Line   int
+	Type   Symbol `json:"type"`
+	Value  rune   `json:"value"`
+	Pos    int    `json:"pos"`
+	Column int    `json:"col"`
+	Line   int    `json:"line"`
 }
 
 func (t *Token) String() string {
-	return fmt.Sprintf("{value: %v, line: %d, col: %d}", t.Type, t.Line, t.Column)
+	return string([]rune{t.Value})
 }
 
 func Tokenize(input io.Reader) ([]*Token, error) {
@@ -220,6 +220,7 @@ func Tokenize(input io.Reader) ([]*Token, error) {
 			}
 			ret = append(ret, &Token{
 				Type:   tokenType,
+				Value:  r,
 				Pos:    pos,
 				Column: column,
 				Line:   line,
@@ -712,8 +713,8 @@ func (d *Derivation) String() string {
 }
 
 type ParsingError struct {
-	Top       Symbol
-	Lookahead *Token
+	Top       Symbol `json:"top"`
+	Lookahead *Token `json:"lookahead"`
 }
 
 func (p *ParsingError) Error() string {
@@ -755,10 +756,9 @@ func Parse(tokens []*Token) ([]*Derivation, error) {
 }
 
 type Tree struct {
-	NonTerminal Symbol  `json:"non_terminal,omitempty"`
+	NonTerminal Symbol  `json:"non_terminal"`
 	Terminal    *Token  `json:"terminal"`
 	Children    []*Tree `json:"children"`
-	Parent      *Tree
 }
 
 func (t *Tree) Leaves() []*Tree {
@@ -785,49 +785,62 @@ func (t *Tree) String() string {
 	return fmt.Sprintf("[%s %v]", curr, t.Children)
 }
 
-/*
-func (t *Tree) Graphviz(io io.Writer) {
-	var builder strings.Builder
-	var nodeToNames map[*Tree]string
-	var nodeToLabel map[*Tree]string
-	var adyacencies map[*Tree][]*Tree
+func (t *Tree) Graphviz(w io.Writer) {
+	nodes := []*Tree{}
+	nodeToName := map[*Tree]string{}
+	nodeToLabel := map[*Tree]string{}
 	var lastId int
+	addNodeData := func(t *Tree) {
+		for _, node := range nodes {
+			if node == t {
+				return
+			}
+		}
+		nodes = append(nodes, t)
+		nodeToName[t] = fmt.Sprintf("a%d", lastId)
+		lastId++
+		if t.Terminal != nil {
+			nodeToLabel[t] = t.Terminal.String()
+		} else {
+			nodeToLabel[t] = t.NonTerminal.String()
+		}
+	}
+	adyacencies := map[*Tree][]*Tree{}
 	stack := []*Tree{t}
 	for len(stack) != 0 {
 		top := stack[0]
 		stack = stack[1:]
-		if _, ok := nodeToNames[top]; !ok {
-			nodeToNames[top] = fmt.Sprintf("a%d", lastId);
-			lastId++
-			if top.Terminal != nil {
-				nodeToLabel[top] = top.Terminal.String()
-			} else {
-				nodeToLabel[top] = top.NonTerminal.String()
-			}
+		addNodeData(top)
+		for _, child := range top.Children {
+			adyacencies[top] = append(adyacencies[top], child)
+			stack = append(stack, child)
 		}
 	}
+	fmt.Fprintf(w, "digraph G {\n")
+	for _, node := range nodes {
+		fmt.Fprintf(w, "    %s [label=\"%s\"]\n", nodeToName[node], nodeToLabel[node])
+	}
+	fmt.Fprintln(w)
+	for node, children := range adyacencies {
+		for _, child := range children {
+			fmt.Fprintf(w, "    %s -> %s;\n", nodeToName[node], nodeToName[child])
+		}
+	}
+	fmt.Fprintf(w, "}\n")
 }
-*/
 
 func AST(tokens []*Token, derivations []*Derivation) *Tree {
 	ret := &Tree{NonTerminal: derivations[0].NonTermial}
 	var lastToken int
 	for _, derivation := range derivations {
 		leaves := ret.Leaves()
-		// TODO: remove
-		fmt.Println(leaves)
-		var leafToExpand int
+		var leafToExpand *Tree
 		for _, leaf := range leaves {
 			if leaf.NonTerminal == derivation.NonTermial {
-				break
+				leafToExpand = leaf
 			}
-			leafToExpand++
 		}
-		// TODO: remove
-		fmt.Println(leafToExpand)
 		rule := Table[derivation.NonTermial][derivation.Production]
-		// TODO: remove
-		fmt.Println(rule)
 		var children []*Tree
 		for _, symbol := range rule {
 			if IsTerminal(symbol) {
@@ -837,33 +850,39 @@ func AST(tokens []*Token, derivations []*Derivation) *Tree {
 				children = append(children, &Tree{NonTerminal: symbol})
 			}
 		}
+		leafToExpand.Children = children
 	}
 	return ret
 }
 
-var file = flag.String("file", "", "grammar file")
-
-func main() {
-	flag.Parse()
-	if *file == "" {
-		fmt.Println("no grammar file found")
-		flag.PrintDefaults()
-		os.Exit(1)
+func parseEBNF(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method != "POST" {
+		return
 	}
-	f, err := os.Open(*file)
+	tokens, err := Tokenize(r.Body)
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-	tokens, err := Tokenize(f)
-	if err != nil {
-		log.Fatal(err)
+		fmt.Fprint(w, err)
+		return
 	}
 	derivations, err := Parse(tokens)
 	if err != nil {
-		log.Fatal(err)
+		out, _ := json.Marshal(err)
+		fmt.Fprint(w, string(out))
+		return
 	}
-	fmt.Println(derivations)
-	ast := AST(tokens, derivations)
-	fmt.Println(ast)
+	out, err := json.Marshal(AST(tokens, derivations))
+	if err != nil {
+		fmt.Fprint(w, err)
+		return
+	}
+	fmt.Fprint(w, string(out))
+}
+
+func main() {
+	server := http.Server{
+		Addr: "127.0.0.1:9000",
+	}
+	http.HandleFunc("/parse", parseEBNF)
+	server.ListenAndServe()
 }
